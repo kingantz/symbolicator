@@ -230,7 +230,7 @@ impl<T: CacheItemRequest> Cacher<T> {
             }))
             .sentry_hub_current();
 
-        actix::spawn(compute_future);
+        actix_rt::spawn(compute_future);
 
         let channel = rx.shared();
 

@@ -1,4 +1,5 @@
 use std::cmp;
+use std::fmt;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -36,6 +37,15 @@ mod sentry;
 
 const USER_AGENT: &str = concat!("symbolicator/", env!("CARGO_PKG_VERSION"));
 
+#[derive(Debug, Fail)]
+struct DisplayError(String);
+
+impl fmt::Display for DisplayError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 #[derive(Debug, Fail, Clone, Copy)]
 pub enum ObjectErrorKind {
     #[fail(display = "failed to download")]
@@ -71,6 +81,24 @@ symbolic::common::derive_failure!(
     ObjectErrorKind,
     doc = "Errors happening while fetching objects"
 );
+
+impl ObjectError {
+    #[inline]
+    pub fn from_error<E>(error: E, kind: ObjectErrorKind) -> Self
+    where
+        E: fmt::Display,
+    {
+        DisplayError(error.to_string()).context(kind).into()
+    }
+
+    #[inline]
+    pub fn io<E>(error: E) -> Self
+    where
+        E: fmt::Display,
+    {
+        Self::from_error(error, ObjectErrorKind::Io)
+    }
+}
 
 impl From<io::Error> for ObjectError {
     fn from(e: io::Error) -> Self {
@@ -359,14 +387,6 @@ impl CacheItemRequest for FetchFileDataRequest {
     }
 }
 
-pub struct ObjectFileBytes(pub Arc<ObjectFile>);
-
-impl AsRef<[u8]> for ObjectFileBytes {
-    fn as_ref(&self) -> &[u8] {
-        &self.0.data
-    }
-}
-
 /// Handle to local metadata file of an object. Having an instance of this type does not mean there
 /// is a downloaded object file behind it. We cache metadata separately (ObjectFileMetaInner) because
 /// every symcache lookup requires reading this metadata.
@@ -595,7 +615,7 @@ fn prepare_downloads(
     source: &SourceConfig,
     filetypes: &'static [FileType],
     object_id: &ObjectId,
-) -> Box<Future<Item = Vec<FileId>, Error = ObjectError>> {
+) -> Box<dyn Future<Item = Vec<FileId>, Error = ObjectError>> {
     match *source {
         SourceConfig::Sentry(ref source) => sentry::prepare_downloads(source, filetypes, object_id),
         SourceConfig::Http(ref source) => http::prepare_downloads(source, filetypes, object_id),
@@ -609,7 +629,7 @@ fn prepare_downloads(
 
 fn download_from_source(
     file_id: &FileId,
-) -> Box<Future<Item = Option<DownloadStream>, Error = ObjectError>> {
+) -> Box<dyn Future<Item = Option<DownloadStream>, Error = ObjectError>> {
     match *file_id {
         FileId::Sentry(ref source, ref file_id) => {
             sentry::download_from_source(source.clone(), file_id)

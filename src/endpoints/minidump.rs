@@ -1,20 +1,16 @@
 use std::fs::File;
 use std::sync::Arc;
 
-use actix::ResponseFuture;
-use actix_web::{
-    dev::Payload, error, http::Method, multipart, Error, HttpMessage, HttpRequest, Json, Query,
-    State,
-};
+use actix_multipart::{Field, Multipart};
+use actix_web::{error, web, Error};
 use futures::{future, Future, Stream};
-use sentry::{configure_scope, Hub};
-use sentry_actix::ActixWebHubExt;
+use sentry::configure_scope;
 use tokio_threadpool::ThreadPool;
 
 use crate::actors::symbolication::{GetSymbolicationStatus, SymbolicationActor};
-use crate::app::{ServiceApp, ServiceState};
+use crate::app::ServiceState;
 use crate::endpoints::symbolicate::SymbolicationRequestQueryParams;
-use crate::sentry::{SentryFutureExt, WriteSentryScope};
+use crate::sentry::WriteSentryScope;
 use crate::types::{RequestId, Scope, SourceConfig, SymbolicationResponse};
 use crate::utils::multipart::{read_multipart_file, read_multipart_sources};
 
@@ -24,18 +20,11 @@ struct MinidumpRequest {
     minidump: Option<File>,
 }
 
-fn handle_multipart_item(
+fn handle_form_field(
     threadpool: Arc<ThreadPool>,
     mut request: MinidumpRequest,
-    item: multipart::MultipartItem<Payload>,
-) -> ResponseFuture<MinidumpRequest, Error> {
-    let field = match item {
-        multipart::MultipartItem::Field(field) => field,
-        multipart::MultipartItem::Nested(nested) => {
-            return handle_multipart_stream(threadpool, request, nested);
-        }
-    };
-
+    field: Field,
+) -> Box<dyn Future<Item = MinidumpRequest, Error = Error>> {
     match field
         .content_disposition()
         .as_ref()
@@ -62,20 +51,6 @@ fn handle_multipart_item(
     }
 }
 
-fn handle_multipart_stream(
-    threadpool: Arc<ThreadPool>,
-    request: MinidumpRequest,
-    stream: multipart::Multipart<Payload>,
-) -> ResponseFuture<MinidumpRequest, Error> {
-    let future = stream
-        .map_err(Error::from)
-        .fold(request, move |request, item| {
-            handle_multipart_item(threadpool.clone(), request, item)
-        });
-
-    Box::new(future)
-}
-
 fn process_minidump(
     symbolication: &SymbolicationActor,
     request: MinidumpRequest,
@@ -94,61 +69,49 @@ fn process_minidump(
         .map_err(error::ErrorInternalServerError)
 }
 
-fn handle_minidump_request(
-    state: State<ServiceState>,
-    params: Query<SymbolicationRequestQueryParams>,
-    request: HttpRequest<ServiceState>,
-) -> ResponseFuture<Json<SymbolicationResponse>, Error> {
-    let hub = Hub::from_request(&request);
+fn post_minidump(
+    state: web::Data<ServiceState>,
+    params: web::Query<SymbolicationRequestQueryParams>,
+    multipart: Multipart,
+) -> Box<dyn Future<Item = web::Json<SymbolicationResponse>, Error = Error>> {
+    let default_sources = state.config.sources.clone();
+    let symbolication = state.symbolication.clone();
+    let io_pool = state.io_threadpool.clone();
 
-    Hub::run(hub, || {
-        let default_sources = state.config.sources.clone();
+    let params = params.into_inner();
+    let SymbolicationRequestQueryParams { scope, timeout } = params;
+    configure_scope(|scope| params.write_sentry_scope(scope));
 
-        let params = params.into_inner();
-        configure_scope(|scope| {
-            params.write_sentry_scope(scope);
+    let response = multipart
+        .map_err(Error::from)
+        .fold(MinidumpRequest::default(), move |request, item| {
+            handle_form_field(io_pool.clone(), request, item)
+        })
+        .and_then(clone!(symbolication, |mut request| {
+            if request.sources.is_none() {
+                request.sources = Some((*default_sources).clone());
+            }
+
+            process_minidump(&symbolication, request, scope)
+        }))
+        .and_then(move |request_id| {
+            symbolication
+                .get_symbolication_status(GetSymbolicationStatus {
+                    request_id,
+                    timeout,
+                })
+                .then(|result| match result {
+                    Ok(Some(response)) => Ok(web::Json(response)),
+                    Ok(None) => Err(error::ErrorInternalServerError(
+                        "symbolication request did not start",
+                    )),
+                    Err(error) => Err(error::ErrorInternalServerError(error)),
+                })
         });
 
-        let io_pool = state.io_threadpool.clone();
-        let request_future = handle_multipart_stream(
-            io_pool.clone(),
-            MinidumpRequest::default(),
-            request.multipart(),
-        );
-
-        let SymbolicationRequestQueryParams { scope, timeout } = params;
-        let symbolication = state.symbolication.clone();
-
-        let response_future = request_future
-            .and_then(clone!(symbolication, |mut request| {
-                if request.sources.is_none() {
-                    request.sources = Some((*default_sources).clone());
-                }
-
-                process_minidump(&symbolication, request, scope)
-            }))
-            .and_then(move |request_id| {
-                symbolication
-                    .get_symbolication_status(GetSymbolicationStatus {
-                        request_id,
-                        timeout,
-                    })
-                    .then(|result| match result {
-                        Ok(Some(response)) => Ok(Json(response)),
-                        Ok(None) => Err(error::ErrorInternalServerError(
-                            "symbolication request did not start",
-                        )),
-                        Err(error) => Err(error::ErrorInternalServerError(error)),
-                    })
-                    .map_err(Error::from)
-            });
-
-        Box::new(response_future.sentry_hub_current())
-    })
+    Box::new(response)
 }
 
-pub fn register(app: ServiceApp) -> ServiceApp {
-    app.resource("/minidump", |r| {
-        r.method(Method::POST).with(handle_minidump_request);
-    })
+pub fn configure(config: &mut web::ServiceConfig) {
+    config.route("/minidump", web::post().to(post_minidump));
 }
