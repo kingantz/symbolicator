@@ -4,6 +4,7 @@ use std::time::Duration;
 use bytes::BytesMut;
 use futures::{future::IntoFuture, Future, Stream};
 use parking_lot::Mutex;
+use rusoto_core::Region;
 use rusoto_s3::S3;
 use tokio::codec::{BytesCodec, FramedRead};
 
@@ -31,6 +32,14 @@ impl rusoto_core::DispatchSignedRequest for SharedHttpClient {
     }
 }
 
+fn get_client(key: &Arc<S3SourceKey>) -> Arc<rusoto_s3::S3Client> {
+    let end_point = &key.end_point;
+    match end_point {
+        Some(end_point) => get_minio_clent(key, end_point.to_string()),
+        None => get_s3_client(key),
+    }
+}
+
 fn get_s3_client(key: &Arc<S3SourceKey>) -> Arc<rusoto_s3::S3Client> {
     let mut container = S3_CLIENTS.lock();
     if let Some(client) = container.get(&key) {
@@ -45,6 +54,30 @@ fn get_s3_client(key: &Arc<S3SourceKey>) -> Arc<rusoto_s3::S3Client> {
             key.region.clone(),
         ));
         container.put(key.clone(), s3.clone());
+        log::debug!("Connect Amazon S3 server!");
+        s3
+    }
+}
+
+fn get_minio_clent(key: &Arc<S3SourceKey>, end_point: String) -> Arc<rusoto_s3::S3Client> {
+    let mut container = S3_CLIENTS.lock();
+    if let Some(client) = container.get(&key) {
+        client.clone()
+    } else {
+        let region = Region::Custom {
+            name: key.region.name().to_string(),
+            endpoint: end_point.clone(),
+        };
+        let s3 = Arc::new(rusoto_s3::S3Client::new_with(
+            SharedHttpClient,
+            rusoto_credential::StaticProvider::new_minimal(
+                key.access_key.clone(),
+                key.secret_key.clone(),
+            ),
+            region,
+        ));
+        container.put(key.clone(), s3.clone());
+        log::debug!("Connect MinIO server! (URL: {})", end_point.clone());
         s3
     }
 }
@@ -82,7 +115,7 @@ pub(super) fn download_from_source(
 
     let bucket = source.bucket.clone();
     let source_key = &source.source_key;
-    let response = get_s3_client(&source_key).get_object(rusoto_s3::GetObjectRequest {
+    let response = get_client(&source_key).get_object(rusoto_s3::GetObjectRequest {
         key: key.clone(),
         bucket: bucket.clone(),
         ..Default::default()

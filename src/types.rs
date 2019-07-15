@@ -114,6 +114,9 @@ pub struct S3SourceKey {
 
     /// S3 secret key.
     pub secret_key: String,
+
+    /// MinIO server URL.
+    pub end_point: Option<String>,
 }
 
 impl PartialEq for S3SourceKey {
