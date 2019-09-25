@@ -2,7 +2,11 @@
 set -eu
 
 if [ "$(id -u)" == "0" ]; then
-  echo '127.0.0.1 api.local.sentry.io' >> /etc/hosts  # For tests
+  # Prepare default data directory
+  # WARNING(BYK): This should be done for the cache_dir mounted by any means, otherwise it is not
+  #               guaranteed to be writable, causing a runtime failure during downloads.
+  chown symbolicator:symbolicator /data
+
   exec gosu symbolicator /bin/symbolicator "$@"
 else
   exec /bin/symbolicator "$@"

@@ -37,6 +37,14 @@ steps:
         ".",
       ]
 
+  - name: "us.gcr.io/$PROJECT_ID/symbolicator:latest"
+    args: ['--version']
+    id: "smoke test 1"
+
+  - name: "us.gcr.io/$PROJECT_ID/symbolicator:latest"
+    args: ['--help']
+    id: "smoke test 2"
+
   # Only tag "latest" when on master
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
@@ -49,4 +57,7 @@ images:
     "us.gcr.io/$PROJECT_ID/symbolicator:builder",
     "us.gcr.io/$PROJECT_ID/symbolicator:$COMMIT_SHA",
   ]
-timeout: 60m
+timeout: 3600s
+options:
+  # Run on bigger machines
+  machineType: 'N1_HIGHCPU_8'
