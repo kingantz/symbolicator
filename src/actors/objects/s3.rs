@@ -16,6 +16,8 @@ lazy_static::lazy_static! {
     static ref AWS_HTTP_CLIENT: rusoto_core::HttpClient = rusoto_core::HttpClient::new().unwrap();
     static ref S3_CLIENTS: Mutex<lru::LruCache<Arc<S3SourceKey>, Arc<rusoto_s3::S3Client>>> =
         Mutex::new(lru::LruCache::new(100));
+    static ref MINIO_CLIENTS: Mutex<lru::LruCache<String, Arc<rusoto_s3::S3Client>>> =
+        Mutex::new(lru::LruCache::new(100));
 }
 
 struct SharedHttpClient;
@@ -60,8 +62,8 @@ fn get_s3_client(key: &Arc<S3SourceKey>) -> Arc<rusoto_s3::S3Client> {
 }
 
 fn get_minio_clent(key: &Arc<S3SourceKey>, end_point: String) -> Arc<rusoto_s3::S3Client> {
-    let mut container = S3_CLIENTS.lock();
-    if let Some(client) = container.get(&key) {
+    let mut container = MINIO_CLIENTS.lock();
+    if let Some(client) = container.get(&end_point) {
         client.clone()
     } else {
         let region = Region::Custom {
@@ -76,7 +78,7 @@ fn get_minio_clent(key: &Arc<S3SourceKey>, end_point: String) -> Arc<rusoto_s3::
             ),
             region,
         ));
-        container.put(key.clone(), s3.clone());
+        container.put(end_point.clone(), s3.clone());
         log::debug!("Connect MinIO server! (URL: {})", end_point.clone());
         s3
     }
@@ -115,6 +117,7 @@ pub(super) fn download_from_source(
 
     let bucket = source.bucket.clone();
     let source_key = &source.source_key;
+
     let response = get_client(&source_key).get_object(rusoto_s3::GetObjectRequest {
         key: key.clone(),
         bucket: bucket.clone(),

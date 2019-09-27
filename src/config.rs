@@ -91,17 +91,17 @@ pub struct CacheConfig {
 impl CacheConfig {
     pub fn default_derived() -> Self {
         CacheConfig {
-            max_unused_for: Some(Duration::from_secs(3600 * 24 * 7)),
-            retry_misses_after: Some(Duration::from_secs(3600)),
-            retry_malformed_after: Some(Duration::from_secs(3600 * 24)),
+            max_unused_for: Some(Duration::from_secs(60)),
+            retry_misses_after: Some(Duration::from_secs(60)),
+            retry_malformed_after: Some(Duration::from_secs(60)),
         }
     }
 
     pub fn default_downloaded() -> Self {
         CacheConfig {
-            max_unused_for: Some(Duration::from_secs(3600 * 24)),
-            retry_misses_after: Some(Duration::from_secs(3600)),
-            retry_malformed_after: Some(Duration::from_secs(3600 * 24)),
+            max_unused_for: Some(Duration::from_secs(60)),
+            retry_misses_after: Some(Duration::from_secs(60)),
+            retry_malformed_after: Some(Duration::from_secs(60)),
         }
     }
 }
